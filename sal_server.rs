@@ -6,7 +6,7 @@ mod thread_limit;
 
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, BufWriter, Write};
-use std::net::{TcpListener, TcpStream};
+use std::net::{TcpListener, TcpStream, ToSocketAddrs};
 use std::panic::UnwindSafe;
 use self::thread_limit::ThreadLimit;
 
@@ -48,7 +48,7 @@ impl SalServer {
     /// let server = SalServer::new("0.0.0.0:8888", 16);
     /// ```
     ///
-    pub fn new(bind_path: &str, thread: usize) -> SalServer {
+    pub fn new<T: ToSocketAddrs>(bind_path: T, thread: usize) -> SalServer {
         let thread = ThreadLimit::new(thread);
         let listener = TcpListener::bind(bind_path).expect("Error: Couldn't bind port!");
         SalServer { thread, listener }
@@ -120,10 +120,6 @@ impl SalServer {
             let (buffer, lens) = match reader.fill_buf() {
                 Ok(x) => (x.to_vec(), x.len()),
                 Err(e) => return Self::return_error(&mut writer, e.to_string().as_str()),
-            };
-
-            if buffer.is_empty() {
-                return Self::return_error(&mut writer, "Empty Input!");
             };
 
             let (result, keep_alive) = route(buffer);
