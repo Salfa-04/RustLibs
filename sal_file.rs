@@ -259,21 +259,18 @@ impl CloudFile {
 
         let data = Self::eight_to_sixteen(&raw_data[16..]);
         let mut data = Self::matrix_decode(&passwd, &data)?;
-        let _ = data.retain(|&x| x != 0);
+        let _ = data.retain(|x| x != &0);
         let (base, list) = data.split_at(64); // len >= 64
 
         let mut base_data: [&str; 3] = [""; 3];
-        let base = String::from_utf8_lossy(base).replace('\0', "");
+        let base = String::from_utf8_lossy(base);
         for (index, value) in base.splitn(3, '\u{1B}').enumerate() {
             base_data[index] = value.trim();
         }
 
         let mut list_res = Vec::new();
         if !list.is_empty() {
-            for val in String::from_utf8_lossy(list)
-                .replace('\0', "")
-                .split('\u{1B}')
-            {
+            for val in String::from_utf8_lossy(list).split('\u{1B}') {
                 let [name, objid] = val.splitn(2, "\u{1A}").collect::<Vec<&str>>()[..] else {
                     return Err(Error::new(
                         ErrorKind::InvalidData,
