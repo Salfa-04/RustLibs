@@ -105,6 +105,7 @@ const HOST_LINK: &str = "sharewh.xuexi365.com:80";
 /// }
 /// ```
 ///
+#[derive(Debug)]
 #[allow(dead_code)]
 pub struct CloudFile {
     inner: Vec<u8>,
@@ -257,18 +258,22 @@ impl CloudFile {
         };
 
         let data = Self::eight_to_sixteen(&raw_data[16..]);
-        let data = Self::matrix_decode(&passwd, &data)?;
+        let mut data = Self::matrix_decode(&passwd, &data)?;
+        let _ = data.retain(|&x| x != 0);
         let (base, list) = data.split_at(64); // len >= 64
 
-        let mut base_data = [""; 3];
-        let base = String::from_utf8_lossy(base);
+        let mut base_data: [&str; 3] = [""; 3];
+        let base = String::from_utf8_lossy(base).replace('\0', "");
         for (index, value) in base.splitn(3, '\u{1B}').enumerate() {
             base_data[index] = value.trim();
         }
 
         let mut list_res = Vec::new();
         if !list.is_empty() {
-            for val in String::from_utf8_lossy(list).split('\u{1B}') {
+            for val in String::from_utf8_lossy(list)
+                .replace('\0', "")
+                .split('\u{1B}')
+            {
                 let [name, objid] = val.splitn(2, "\u{1A}").collect::<Vec<&str>>()[..] else {
                     return Err(Error::new(
                         ErrorKind::InvalidData,
@@ -281,9 +286,9 @@ impl CloudFile {
 
         Ok(Self {
             inner: raw_data.into(),
-            uid: base_data[0].into(),
-            token: base_data[1].into(),
-            dirid: base_data[2].into(),
+            uid: base_data[0].to_string(),
+            token: base_data[1].to_string(),
+            dirid: base_data[2].to_string(),
             filemap: list_res,
             stream: None,
         })
@@ -375,6 +380,7 @@ impl CloudFile {
                 "GET /api/getMyDirAndFiles\
                 ?puid={}&_token={}&fldid={}\
                 &page=1&size=4 HTTP/1.1\r\n\
+                Connection: Keep-Alive\r\n\
                 Host: pan-yz.chaoxing.com\r\n\r\n",
                 self.uid, self.token, self.dirid
             )
@@ -395,9 +401,8 @@ impl CloudFile {
             ));
         };
 
-        let timer = self.filemap.len();
+        let counter = self.filemap.len();
         let mut resid = Vec::new();
-
         if data.contains("\"result\":true") {
             if !data.contains("\"data\":[],") {
                 for file in data[match data.find("[{") {
@@ -481,17 +486,15 @@ impl CloudFile {
 
         self.delete(&stream, &resid)?;
         self.update_inner()?;
-
-        if self.filemap.len() == timer {
+        if self.filemap.len() == counter {
             self.set_stream(Stream::None)?;
-
             return Err(Error::new(
                 ErrorKind::WriteZero,
                 format!("Scan Finished: Read 0000!"),
             ));
         }
 
-        Ok(self.filemap.len() - timer)
+        Ok(self.filemap.len() - counter)
     }
 
     ///
