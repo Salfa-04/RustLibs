@@ -20,7 +20,8 @@ use std::{
 };
 
 pub use std::io::{Error, ErrorKind, Result};
-const URL: &str = "pan-yz.chaoxing.com:80";
+const HOST_SCAN: &str = "pan-yz.chaoxing.com:80";
+const HOST_LINK: &str = "sharewh.xuexi365.com:80";
 
 ///
 /// `CloudFile` 实例结构体
@@ -33,6 +34,7 @@ const URL: &str = "pan-yz.chaoxing.com:80";
 /// **Example 1:**
 /// ```
 /// mod sal_file;
+///
 /// use sal_file::CloudFile;
 /// use std::fs::{read, write};
 ///
@@ -50,6 +52,7 @@ const URL: &str = "pan-yz.chaoxing.com:80";
 /// **Example 2:**
 /// ```
 /// mod sal_file;
+///
 /// use sal_file::CloudFile;
 /// use std::fs::{read, write};
 ///
@@ -62,7 +65,7 @@ const URL: &str = "pan-yz.chaoxing.com:80";
 ///     &[127, 97, 112, 128],
 /// )?;
 ///
-/// cloud.set_stream(true)?;
+/// cloud.set_stream(Stream::Scan)?;
 /// while let Ok(_) = cloud.scan() {}
 ///
 /// let _filelist = cloud.get_filemap();
@@ -70,6 +73,39 @@ const URL: &str = "pan-yz.chaoxing.com:80";
 /// write(path, &cloud)?;
 /// ````
 ///
+/// **Example 3:**
+/// ```
+/// mod sal_file;
+///
+/// use sal_file::{CloudFile, Stream};
+/// use std::fs::{read, write};
+/// let mut filer = CloudFile::new(
+///     "29*******".into(),
+///     "b8***391*******d3726f*******d0b2".into(),
+///     "94***555*******592".into(),
+///     &[127, 97, 112, 128],
+/// )?;
+///
+/// filer.set_stream(Stream::Scan)?;
+/// let mut counter = 0;
+/// while let Ok(n) = filer.scan() {
+///     counter += n;
+/// }
+///
+/// let path = "/home/salfa/test.bin";
+/// let data = read(path)?;
+/// filer.extend_from_raw(&data)?;
+/// write(path, &filer)?;
+////
+/// println!("扫描完成，新增{counter:03}项文件");
+/// filer.set_stream(Stream::Link)?;
+/// for (name, objid) in filer.get_filemap() {
+///     let link = filer.get_link(objid)?;
+///     println!("文件: {name}\r\n直链: {link}\r\n");
+/// }
+/// ```
+///
+#[allow(dead_code)]
 pub struct CloudFile {
     inner: Vec<u8>,
     stream: Option<TcpStream>,
@@ -79,6 +115,22 @@ pub struct CloudFile {
     dirid: String, // fldid
 
     filemap: Vec<(String, String)>, // filelist: (name, objid)
+}
+
+///
+/// `TcpStream` 流控制枚举
+///
+/// 与 `CloudFile::set_stream` 配合使用
+///
+/// - Stream::Scan => 与超星云盘服务器连接
+/// - Stream::Link => 与超星下载服务器连接
+/// - Stream::None => 与服务器断开连接
+///
+#[allow(dead_code)]
+pub enum Stream {
+    Scan,
+    Link,
+    None,
 }
 
 impl AsRef<[u8]> for CloudFile {
@@ -297,15 +349,22 @@ impl CloudFile {
     /// while let Ok(_) = cloud.scan() {}
     /// ```
     ///
+    /// 注意：该函数会**自动结束**流!!!
+    /// ```
+    /// pub fn scan(&mut self) -> Result<usize> {
+    ///
+    ///     // inner code
+    ///
+    ///     self.set_stream(Stream::None)?;
+    /// }
+    /// ````
+    ///
     pub fn scan(&mut self) -> Result<usize> {
-        let stream = match &self.stream {
-            Some(x) => x,
-            None => {
-                return Err(Error::new(
-                    ErrorKind::AddrNotAvailable,
-                    format!("Stream is Unavailable!"),
-                ))
-            }
+        let Some(stream) = &self.stream else {
+            return Err(Error::new(
+                ErrorKind::AddrNotAvailable,
+                format!("Stream is Unavailable!"),
+            ));
         };
 
         let mut writer = BufWriter::new(stream);
@@ -329,91 +388,89 @@ impl CloudFile {
         let _ = drop(reader);
 
         let data = String::from_utf8_lossy(&data);
-        let data = match data.split_once("\r\n\r\n") {
-            Some((_, x)) => x,
-            None => {
-                return Err(Error::new(
-                    ErrorKind::ConnectionReset,
-                    "InvalidData Received from Server",
-                ))
-            }
+        let Some((_, data)) = data.split_once("\r\n\r\n") else {
+            return Err(Error::new(
+                ErrorKind::UnexpectedEof,
+                "InvalidData Received from Server",
+            ));
         };
 
         let timer = self.filemap.len();
         let mut resid = Vec::new();
 
         if data.contains("\"result\":true") {
-            for file in data[match data.find("[{") {
-                Some(x) => x,
-                None => {
-                    return Err(Error::new(
-                        ErrorKind::ConnectionReset,
-                        "InvalidData Received from Server",
-                    ))
+            if !data.contains("\"data\":[],") {
+                for file in data[match data.find("[{") {
+                    Some(x) => x,
+                    None => {
+                        return Err(Error::new(
+                            ErrorKind::ConnectionReset,
+                            "InvalidData Received from Server",
+                        ))
+                    }
+                } + 2..match data.find("}]") {
+                    Some(x) => x,
+                    None => {
+                        return Err(Error::new(
+                            ErrorKind::ConnectionReset,
+                            "InvalidData Received from Server",
+                        ))
+                    }
+                }]
+                    .split("},{")
+                {
+                    let objid = if let Some(o) = file.find("\"objectId\"") {
+                        let file = &file[o + 12..];
+                        if let Some(o) = file.find("\",\"") {
+                            file[..o].to_string()
+                        } else {
+                            return Err(Error::new(
+                                ErrorKind::ConnectionReset,
+                                "InvalidData Received from Server",
+                            ));
+                        }
+                    } else {
+                        return Err(Error::new(
+                            ErrorKind::ConnectionReset,
+                            "InvalidData Received from Server",
+                        ));
+                    };
+
+                    let name = if let Some(o) = file.find("\"name\"") {
+                        let file = &file[o + 8..];
+                        if let Some(o) = file.find("\",\"") {
+                            file[..o].to_string()
+                        } else {
+                            return Err(Error::new(
+                                ErrorKind::ConnectionReset,
+                                "InvalidData Received from Server",
+                            ));
+                        }
+                    } else {
+                        return Err(Error::new(
+                            ErrorKind::ConnectionReset,
+                            "InvalidData Received from Server",
+                        ));
+                    };
+
+                    self.filemap.push((name, objid));
+                    resid.push(if let Some(o) = file.find("\"residstr\"") {
+                        let file = &file[o + 12..];
+                        if let Some(o) = file.find("\",\"") {
+                            file[..o].to_string()
+                        } else {
+                            return Err(Error::new(
+                                ErrorKind::ConnectionReset,
+                                "InvalidData Received from Server",
+                            ));
+                        }
+                    } else {
+                        return Err(Error::new(
+                            ErrorKind::ConnectionReset,
+                            "InvalidData Received from Server",
+                        ));
+                    });
                 }
-            } + 2..match data.find("}]") {
-                Some(x) => x,
-                None => {
-                    return Err(Error::new(
-                        ErrorKind::ConnectionReset,
-                        "InvalidData Received from Server",
-                    ))
-                }
-            }]
-                .split("},{")
-            {
-                let objid = if let Some(o) = file.find("\"objectId\"") {
-                    let file = &file[o + 12..];
-                    if let Some(o) = file.find("\",\"") {
-                        file[..o].to_string()
-                    } else {
-                        return Err(Error::new(
-                            ErrorKind::ConnectionReset,
-                            "InvalidData Received from Server",
-                        ));
-                    }
-                } else {
-                    return Err(Error::new(
-                        ErrorKind::ConnectionReset,
-                        "InvalidData Received from Server",
-                    ));
-                };
-
-                let name = if let Some(o) = file.find("\"name\"") {
-                    let file = &file[o + 8..];
-                    if let Some(o) = file.find("\",\"") {
-                        file[..o].to_string()
-                    } else {
-                        return Err(Error::new(
-                            ErrorKind::ConnectionReset,
-                            "InvalidData Received from Server",
-                        ));
-                    }
-                } else {
-                    return Err(Error::new(
-                        ErrorKind::ConnectionReset,
-                        "InvalidData Received from Server",
-                    ));
-                };
-
-                resid.push(if let Some(o) = file.find("\"residstr\"") {
-                    let file = &file[o + 12..];
-                    if let Some(o) = file.find("\",\"") {
-                        file[..o].to_string()
-                    } else {
-                        return Err(Error::new(
-                            ErrorKind::ConnectionReset,
-                            "InvalidData Received from Server",
-                        ));
-                    }
-                } else {
-                    return Err(Error::new(
-                        ErrorKind::ConnectionReset,
-                        "InvalidData Received from Server",
-                    ));
-                });
-
-                self.filemap.push((name, objid));
             }
         } else {
             return Err(Error::new(
@@ -426,7 +483,8 @@ impl CloudFile {
         self.update_inner()?;
 
         if self.filemap.len() == timer {
-            self.set_stream(false)?;
+            self.set_stream(Stream::None)?;
+
             return Err(Error::new(
                 ErrorKind::WriteZero,
                 format!("Scan Finished: Read 0000!"),
@@ -437,16 +495,29 @@ impl CloudFile {
     }
 
     ///
-    /// 用于为实例开启流式通道，与服务器连接
-    ///
-    /// 参数：
-    /// - stream: `bool`
-    ///     - true: 开启连接
-    ///     - false: 关闭连接
+    /// 通过 `objectid` 获取下载链接
     ///
     /// 返回一个 `Result` 枚举
-    /// - Ok(())
+    /// - Ok(String): 对应文件的链接
     /// - Err(std::io::Error)
+    ///
+    /// 直接请求访问下载链接可能会：
+    /// ```
+    /// <h1>403 Forbidden</h1>
+    /// <p>You don't have permission to access the URL on this server.<hr/>Powered by Tengine
+    /// ```
+    ///
+    /// 需要给链接添加 `Referer` Header:
+    /// ```
+    /// `Referer: http://sharewh{id}.xuexi365.com/` id: OPTION(1~4)
+    /// ```
+    ///
+    /// 请求成功会以 `attachment` 形式返回数据。
+    ///
+    /// 另外存在一个分享页面：
+    /// ```
+    /// http://cloud.ananas.chaoxing.com/view/fileview?objectid={objid}
+    /// ```
     ///
     /// **Example:**
     /// ```
@@ -460,15 +531,117 @@ impl CloudFile {
     ///     &[127, 97, 112, 128],
     /// )?;
     ///
-    /// cloud.set_stream(true)?;
+    ///
+    /// cloud.set_stream(Stream::Scan)?;
     /// while let Ok(_) = cloud.scan() {}
+    ///
+    /// filer.set_stream(Stream::Link)?;
+    /// for (name, objid) in filer.get_filemap() {
+    ///     let link = filer.get_link(objid)?;
+    ///     println!("文件: {name}\r\n直链: {link}\r\n");
+    /// }
+    /// cloud.set_stream(false)?;
     /// ```
     ///
-    pub fn set_stream(&mut self, stream: bool) -> Result<()> {
-        if stream {
-            self.stream = Some(TcpStream::connect(URL)?);
+    /// 注意：该函数**不会**自动结束流!!!
+    ///
+    pub fn get_link(&self, object_id: &String) -> Result<String> {
+        let Some(stream) = &self.stream else {
+            return Err(Error::new(
+                ErrorKind::AddrNotAvailable,
+                format!("Stream is Unavailable!"),
+            ));
+        };
+
+        let mut writer = BufWriter::new(stream);
+        let mut reader = BufReader::new(stream);
+
+        writer.write_all(
+            format!(
+                "GET /share/download/{} HTTP/1.1\r\n\
+                Host: sharewh.xuexi365.com\r\n\r\n",
+                object_id
+            )
+            .as_bytes(),
+        )?;
+        writer.flush()?;
+
+        let data = reader.fill_buf()?.to_vec();
+
+        let _ = drop(writer);
+        let _ = drop(reader);
+
+        let data = String::from_utf8_lossy(&data).replace(' ', "");
+
+        let mut res = String::new();
+        if let Some(x) = data.find("vardownloadUrl='") {
+            let Some((data, _)) = data[x + 16..].split_once("';\r\n") else {
+                return Err(Error::new(
+                    ErrorKind::ConnectionReset,
+                    "InvalidData Received from Server",
+                ));
+            };
+            res.push_str(data);
+        } else if data.contains("获取下载地址失败") {
+            return Err(Error::new(
+                ErrorKind::NotFound,
+                "Download Link Not Found: Check ObjectID!",
+            ));
         } else {
-            self.stream = None;
+            let Some((_, data)) = data.split_once("\r\n\r\n") else {
+                return Err(Error::new(
+                    ErrorKind::UnexpectedEof,
+                    "InvalidData Received from Server",
+                ));
+            };
+
+            return Err(Error::new(
+                ErrorKind::UnexpectedEof,
+                format!("InvalidData Received: {}", data),
+            ));
+        };
+
+        Ok(res)
+    }
+
+    ///
+    /// 用于为实例开启流式通道，与服务器连接
+    ///
+    /// 参数：
+    /// - stream: `Stream` 枚举
+    ///     - Stream::Scan => 与超星云盘服务器连接
+    ///     - Stream::Link => 与超星下载服务器连接
+    ///     - Stream::None => 与服务器断开连接
+    ///
+    /// 返回一个 `Result` 枚举
+    /// - Ok(())
+    /// - Err(std::io::Error)
+    ///
+    /// **Example:**
+    /// ```
+    /// mod sal_file;
+    /// use sal_file::{CloudFile, Stream};
+    ///
+    /// let mut cloud = CloudFile::new(
+    ///     "29*******".into(),
+    ///     "b8***391*******d3726f*******d0b2".into(),
+    ///     "94***555*******592".into(),
+    ///     &[127, 97, 112, 128],
+    /// )?;
+    ///
+    /// cloud.set_stream(Stream::Scan)?;
+    /// while let Ok(_) = cloud.scan() {}
+    ///
+    /// cloud.set_stream(Stream::Link)?;
+    /// let _ = cloud.get_link()?;
+    /// cloud.set_stream(Stream::None)?;
+    /// ```
+    ///
+    pub fn set_stream(&mut self, stream: Stream) -> Result<()> {
+        match stream {
+            Stream::Scan => self.stream = Some(TcpStream::connect(HOST_SCAN)?),
+            Stream::Link => self.stream = Some(TcpStream::connect(HOST_LINK)?),
+            Stream::None => self.stream = None,
         }
 
         Ok(())
@@ -495,7 +668,7 @@ impl CloudFile {
     ///     &[127, 97, 112, 128],
     /// )?;
     ///
-    /// cloud.set_stream(true)?;
+    /// cloud.set_stream(Stream::Scan)?;
     /// while let Ok(_) = cloud.scan() {}
     ///
     /// let map = cloud.get_filemap();
@@ -579,6 +752,10 @@ impl CloudFile {
     }
 
     fn delete(&self, stream: &TcpStream, resid: &[String]) -> Result<bool> {
+        if resid.len() == 0 {
+            return Ok(true);
+        }
+
         let mut writer = BufWriter::new(stream);
         let mut reader = BufReader::new(stream);
 
